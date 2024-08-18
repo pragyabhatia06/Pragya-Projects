@@ -1,1 +1,15 @@
+altair
+numpy
+pandas
+pydeck
 streamlit
+replicate
+joblib
+scikit-learn
+scipy
+matplotlib
+transformers
+torch
+sentencepiece
+nltk
+vaderSentiment
