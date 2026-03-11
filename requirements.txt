@@ -13,3 +13,5 @@ torch
 sentencepiece
 nltk
 vaderSentiment
+transformers
+sacremoses

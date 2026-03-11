@@ -24,9 +24,9 @@ def run():
         page_icon="👋",
     )
 
-    st.write("# These are demo projects.")
+    st.write("# Welcome to Pragya Bhatia's Data Engineering Portfolio")
 
-    st.sidebar.success("Select a above demo projects.")
+    st.sidebar.success("Select a project from the sidebar.")
 
     st.markdown(
         """

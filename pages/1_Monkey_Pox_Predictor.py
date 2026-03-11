@@ -1,83 +1,143 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022)
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-from urllib.error import URLError
-
-import altair as alt
-import pandas as pd
-
-import streamlit as st
-from streamlit.hello.utils import show_code
-
-import joblib
-import os
-from sklearn import preprocessing
 import pickle
-from sklearn.metrics import __all__
-from sklearn.naive_bayes import BernoulliNB
-from sklearn.linear_model import LogisticRegression
+from pathlib import Path
 
+import pandas as pd
+import streamlit as st
 
-
-def predict_MP():
-    @st.cache_data
-    def read_model():
-        modelname = "Linear_Regression_Model_MP.pkl"
-        parent_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        loaded_model = pickle.load(open(parent_dir + "/model/" + modelname, 'rb'))
-        return loaded_model
-    
-    dictmap = {"None":0,"Fever":1,"Muscle Aches and Pain":2,"Swollen Lymph Nodes":3}
-    mapping = {"No": 0, "Yes": 1}
-    
-    symptomslist = [HIV_Infection,Rectal_Pain,Sexually_Transmitted_Infection, dictmap[Systemic_Illness],Penile_Oedema, Sore_Throat,Solitary_Lesion,Swollen_Tonsils]
-    
-    symptomslist_encoded = [mapping.get(item, item) for item in symptomslist]
-    
-    loaded_model_pkl = read_model()
-
-    out = loaded_model_pkl.predict(pd.DataFrame([symptomslist_encoded]))
-    if int(out) == 0:
-        st.write("Negative")
-    else:
-        st.write("Positive")
-    
-st.set_page_config(page_title="Monkey Pox Prediction", page_icon="📊")
-st.markdown("# Monkey Pox Prediction")
-st.write(
-    """Kindly provide your symptom to check whether you have a Monkey Pox. """
+st.set_page_config(
+    page_title="Symptom Risk Classification Demo",
+    page_icon="🩺",
+    layout="centered",
 )
 
-Systemic_Illness = st.selectbox("Systemic Illness",["None","Fever","Swollen Lymph Nodes","Muscle Aches and Pain"]) 
-col1, col2,col3 = st.columns(3)
-with col1:
-    Sore_Throat = st.selectbox("Sore Throat",["No","Yes"])
-with col2:
-    Swollen_Tonsils = st.selectbox("Swollen Tonsils",["No","Yes"])
-with col3:
-    HIV_Infection = st.selectbox("HIV Infection",["No","Yes"])
-coln1, coln2 = st.columns(2)
-with coln1:
-    Rectal_Pain = st.selectbox("Rectal Pain",["No","Yes"])
-with coln2:
-    Sexually_Transmitted_Infection = st.selectbox("Sexually Transmitted Infection",["No","Yes"])
-cl1, cl2 = st.columns(2)
-with cl1:
-    Penile_Oedema	 = st.selectbox("Penile Oedema",["No","Yes"])
-with cl2:
-    Solitary_Lesion = st.selectbox("Solitary Lesion",["No","Yes"])
+MODEL_FILENAME = "Linear_Regression_Model_MP.pkl"
 
-if st.button("Predict"):
-    predict_MP()
+
+@st.cache_resource
+def load_model():
+    model_path = Path(__file__).resolve().parent / "model" / MODEL_FILENAME
+
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+
+    with open(model_path, "rb") as f:
+        model = pickle.load(f)
+
+    return model
+
+
+def build_feature_row(
+    hiv_infection: str,
+    rectal_pain: str,
+    sexually_transmitted_infection: str,
+    systemic_illness: str,
+    penile_oedema: str,
+    sore_throat: str,
+    solitary_lesion: str,
+    swollen_tonsils: str,
+) -> pd.DataFrame:
+    yes_no_map = {"No": 0, "Yes": 1}
+    illness_map = {
+        "None": 0,
+        "Fever": 1,
+        "Muscle Aches and Pain": 2,
+        "Swollen Lymph Nodes": 3,
+    }
+
+    # Use EXACT feature names expected by model
+    row = {
+        "HIV Infection": yes_no_map[hiv_infection],
+        "Rectal Pain": yes_no_map[rectal_pain],
+        "Sexually Transmitted Infection": yes_no_map[sexually_transmitted_infection],
+        "Encoded Systemic Illness": illness_map[systemic_illness],
+        "Penile Oedema": yes_no_map[penile_oedema],
+        "Sore Throat": yes_no_map[sore_throat],
+        "Solitary Lesion": yes_no_map[solitary_lesion],
+        "Swollen Tonsils": yes_no_map[swollen_tonsils],
+    }
+
+    # Keep exact order too
+    feature_order = [
+        "HIV Infection",
+        "Rectal Pain",
+        "Sexually Transmitted Infection",
+        "Encoded Systemic Illness",
+        "Penile Oedema",
+        "Sore Throat",
+        "Solitary Lesion",
+        "Swollen Tonsils",
+    ]
+
+    return pd.DataFrame([row])[feature_order]
+
+
+def predict_risk(features_df: pd.DataFrame):
+    model = load_model()
+    prediction = model.predict(features_df)[0]
+
+    probability = None
+    if hasattr(model, "predict_proba"):
+        probability = float(model.predict_proba(features_df)[0][1])
+
+    return prediction, probability
+
+
+st.title("🩺 Symptom Risk Classification Demo")
+st.caption("Demo ML app for symptom-based classification. This is not medical advice or diagnosis.")
+
+st.write("Select the symptom information below and run the model prediction.")
+
+systemic_illness = st.selectbox(
+    "Systemic Illness",
+    ["None", "Fever", "Swollen Lymph Nodes", "Muscle Aches and Pain"],
+)
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    sore_throat = st.selectbox("Sore Throat", ["No", "Yes"])
+with col2:
+    swollen_tonsils = st.selectbox("Swollen Tonsils", ["No", "Yes"])
+with col3:
+    hiv_infection = st.selectbox("HIV Infection", ["No", "Yes"])
+
+col4, col5 = st.columns(2)
+with col4:
+    rectal_pain = st.selectbox("Rectal Pain", ["No", "Yes"])
+with col5:
+    sexually_transmitted_infection = st.selectbox("Sexually Transmitted Infection", ["No", "Yes"])
+
+col6, col7 = st.columns(2)
+with col6:
+    penile_oedema = st.selectbox("Penile Oedema", ["No", "Yes"])
+with col7:
+    solitary_lesion = st.selectbox("Solitary Lesion", ["No", "Yes"])
+
+if st.button("Run Prediction", use_container_width=True):
+    try:
+        input_df = build_feature_row(
+            hiv_infection=hiv_infection,
+            rectal_pain=rectal_pain,
+            sexually_transmitted_infection=sexually_transmitted_infection,
+            systemic_illness=systemic_illness,
+            penile_oedema=penile_oedema,
+            sore_throat=sore_throat,
+            solitary_lesion=solitary_lesion,
+            swollen_tonsils=swollen_tonsils,
+        )
+
+        prediction, probability = predict_risk(input_df)
+
+        st.subheader("Prediction Result")
+        if int(prediction) == 1:
+            st.error("Model Output: Positive Class")
+        else:
+            st.success("Model Output: Negative Class")
+
+        if probability is not None:
+            st.metric("Predicted Positive Probability", f"{probability:.2%}")
+
+        with st.expander("Input Features Sent to Model"):
+            st.dataframe(input_df, use_container_width=True, hide_index=True)
+
+    except Exception as e:
+        st.error(f"Prediction failed: {e}")
