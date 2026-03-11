@@ -23,6 +23,26 @@ PIPELINE_LOG = "pipeline_runs.jsonl"
 # Scraping Layer
 # -------------------------
 
+def make_streamlit_safe(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+
+    safe_df = df.copy()
+
+    for col in safe_df.columns:
+        # convert timezone / datetime safely if needed
+        if pd.api.types.is_datetime64_any_dtype(safe_df[col]):
+            safe_df[col] = safe_df[col].astype("string")
+
+        # convert pandas string / object-like columns to plain Python strings
+        elif (
+            pd.api.types.is_string_dtype(safe_df[col])
+            or pd.api.types.is_object_dtype(safe_df[col])
+        ):
+            safe_df[col] = safe_df[col].astype(str)
+
+    return safe_df
+
 def scrape_quotes():
 
     url = f"{BASE_URL}/page/1/"
@@ -214,14 +234,42 @@ def read_logs():
 # Read Data
 # -------------------------
 
-def read_quotes():
-
-    if not Path(DB_FILE).exists():
+@st.cache_data
+def read_pipeline_logs() -> pd.DataFrame:
+    if not PIPELINE_LOG_PATH.exists():
         return pd.DataFrame()
 
-    conn = sqlite3.connect(DB_FILE)
-    df = pd.read_sql("SELECT * FROM quotes", conn)
-    conn.close()
+    rows = []
+    with open(PIPELINE_LOG_PATH, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    df = pd.DataFrame(rows)
+
+    if not df.empty:
+        for col in df.columns:
+            df[col] = df[col].astype(str)
+
+    return df
+
+
+@st.cache_data
+def read_quotes() -> pd.DataFrame:
+    if not DB_PATH.exists():
+        return pd.DataFrame()
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        df = pd.read_sql_query("SELECT * FROM quotes ORDER BY quote_id DESC", conn)
+    finally:
+        conn.close()
+
+    if not df.empty:
+        for col in df.columns:
+            df[col] = df[col].astype(str)
 
     return df
 
@@ -269,11 +317,6 @@ else:
 
 st.header("Loaded Quotes")
 
-quotes = read_quotes()
-
-if not quotes.empty:
-
-    st.dataframe(quotes)
-
-else:
-    st.info("No data loaded yet")
+quotes_df = read_quotes()
+quotes_df = make_streamlit_safe(quotes_df)
+st.dataframe(quotes_df, use_container_width=True)
