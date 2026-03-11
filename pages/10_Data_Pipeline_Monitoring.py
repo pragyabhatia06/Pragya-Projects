@@ -1,303 +1,451 @@
-# app.py
+from datetime import datetime
+from pathlib import Path
+import json
 
-import random
-from datetime import datetime, timedelta
-
+import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
+import nltk
+from nltk.sentiment import SentimentIntensityAnalyzer
 
 st.set_page_config(
-    page_title="Data Pipeline Monitoring Dashboard",
-    page_icon="📊",
+    page_title="Text Sentiment Pipeline Dashboard",
+    page_icon="📈",
     layout="wide",
 )
 
-
-@st.cache_data
-def generate_pipeline_runs(days: int = 30) -> pd.DataFrame:
-    pipelines = [
-        {"pipeline_name": "customer_ingestion", "owner": "Data Platform", "sla_minutes": 30, "frequency": "Hourly"},
-        {"pipeline_name": "orders_etl", "owner": "Commerce", "sla_minutes": 45, "frequency": "Hourly"},
-        {"pipeline_name": "inventory_sync", "owner": "Supply Chain", "sla_minutes": 60, "frequency": "Daily"},
-        {"pipeline_name": "finance_reporting", "owner": "Finance", "sla_minutes": 90, "frequency": "Daily"},
-        {"pipeline_name": "marketing_attribution", "owner": "Marketing", "sla_minutes": 120, "frequency": "Daily"},
-        {"pipeline_name": "crm_snapshot", "owner": "Sales", "sla_minutes": 50, "frequency": "Daily"},
-    ]
-
-    rows = []
-    now = datetime.now().replace(second=0, microsecond=0)
-
-    for pipeline in pipelines:
-        runs = days * (12 if pipeline["frequency"] == "Hourly" else 1)
-        run_time = now - timedelta(days=days)
-
-        for _ in range(runs):
-            run_time += timedelta(hours=2 if pipeline["frequency"] == "Hourly" else 24)
-
-            scheduled_time = run_time
-            duration = max(5, int(random.gauss(mu=pipeline["sla_minutes"] * 0.75, sigma=10)))
-
-            status = random.choices(
-                ["Success", "Failed", "Running", "Delayed"],
-                weights=[78, 10, 4, 8],
-                k=1,
-            )[0]
-
-            if status == "Failed":
-                duration = min(duration, pipeline["sla_minutes"] + random.randint(5, 30))
-                record_count = random.randint(0, 1000)
-                error_message = random.choice(
-                    [
-                        "Connection timeout while reading source API",
-                        "Primary key violation on target table",
-                        "S3 object missing for expected partition",
-                        "Schema drift detected in upstream payload",
-                        "Warehouse lock timeout during merge step",
-                    ]
-                )
-            elif status == "Running":
-                duration = random.randint(1, pipeline["sla_minutes"])
-                record_count = random.randint(10000, 200000)
-                error_message = None
-            else:
-                record_count = random.randint(5000, 300000)
-                error_message = None
-
-            if status == "Delayed":
-                error_message = "Pipeline started late due to upstream dependency delay"
-
-            actual_start = scheduled_time + timedelta(minutes=random.randint(0, 15))
-            completed_at = None if status == "Running" else actual_start + timedelta(minutes=duration)
-            sla_breached = duration > pipeline["sla_minutes"] or status in ["Failed", "Delayed"]
-
-            rows.append(
-                {
-                    "pipeline_name": pipeline["pipeline_name"],
-                    "owner": pipeline["owner"],
-                    "frequency": pipeline["frequency"],
-                    "scheduled_time": scheduled_time,
-                    "actual_start": actual_start,
-                    "completed_at": completed_at,
-                    "duration_minutes": duration,
-                    "sla_minutes": pipeline["sla_minutes"],
-                    "status": status,
-                    "record_count": record_count,
-                    "sla_breached": sla_breached,
-                    "error_message": error_message,
-                }
-            )
-
-    df = pd.DataFrame(rows).sort_values(
-        ["pipeline_name", "scheduled_time"],
-        ascending=[True, False],
-    )
-    return df
+LOG_FILE = Path("sentiment_audit_log.jsonl")
 
 
-def format_dt(value):
+# ---------------------------
+# Safe display helpers
+# ---------------------------
+def safe_str(value):
     if pd.isna(value):
-        return "—"
-    return pd.to_datetime(value).strftime("%Y-%m-%d %H:%M")
+        return ""
+    return str(value)
 
 
-def latest_pipeline_snapshot(df: pd.DataFrame) -> pd.DataFrame:
-    latest = (
-        df.sort_values("scheduled_time", ascending=False)
-        .groupby("pipeline_name", as_index=False)
-        .first()
-        .sort_values("pipeline_name")
-    )
+def make_display_safe(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
 
-    summary_rows = []
-
-    for pipeline_name in latest["pipeline_name"]:
-        pipeline_df = df[df["pipeline_name"] == pipeline_name]
-        latest_row = pipeline_df.sort_values("scheduled_time", ascending=False).iloc[0]
-
-        success_rate = round((pipeline_df["status"] == "Success").mean() * 100, 1)
-        failure_rate = round((pipeline_df["status"] == "Failed").mean() * 100, 1)
-        sla_breach_rate = round(pipeline_df["sla_breached"].mean() * 100, 1)
-
-        summary_rows.append(
-            {
-                "Pipeline": pipeline_name,
-                "Owner": latest_row["owner"],
-                "Frequency": latest_row["frequency"],
-                "Current Status": latest_row["status"],
-                "Last Run Time": format_dt(latest_row["scheduled_time"]),
-                "Duration (mins)": int(latest_row["duration_minutes"]),
-                "SLA (mins)": int(latest_row["sla_minutes"]),
-                "Success Rate %": success_rate,
-                "Failure Rate %": failure_rate,
-                "SLA Breach %": sla_breach_rate,
-                "Last Record Count": int(latest_row["record_count"]),
-                "Latest Error": latest_row["error_message"] or "—",
-            }
-        )
-
-    return pd.DataFrame(summary_rows)
+    out = df.copy()
+    for col in out.columns:
+        out[col] = out[col].apply(safe_str)
+    return out
 
 
-def build_kpis(df: pd.DataFrame):
-    latest = (
-        df.sort_values("scheduled_time", ascending=False)
-        .groupby("pipeline_name", as_index=False)
-        .first()
-    )
+def render_html_table(df: pd.DataFrame, height: int = 360):
+    if df.empty:
+        st.info("No data available.")
+        return
 
-    total_pipelines = len(latest)
-    running_count = (latest["status"] == "Running").sum()
-    failed_count = (latest["status"] == "Failed").sum()
-    success_rate = round((df["status"] == "Success").mean() * 100, 1)
-    sla_breach_rate = round(df["sla_breached"].mean() * 100, 1)
-    total_records = int(latest["record_count"].sum())
+    safe_df = make_display_safe(df)
 
-    return total_pipelines, running_count, failed_count, success_rate, sla_breach_rate, total_records
+    html = safe_df.to_html(index=False, escape=False)
+    styled_html = f"""
+    <div style="
+        max-height:{height}px;
+        overflow:auto;
+        border:1px solid #ddd;
+        border-radius:8px;
+        padding:8px;
+        background-color:white;
+    ">
+        {html}
+    </div>
+    """
 
-
-def sanitize_for_streamlit(df: pd.DataFrame) -> pd.DataFrame:
-    safe_df = df.copy()
-    string_cols = safe_df.select_dtypes(include=["string"]).columns
-    for col in string_cols:
-        safe_df[col] = safe_df[col].astype("object")
-    return safe_df
-
-
-def render_html_table(df: pd.DataFrame, max_height_px: int = 420) -> None:
-    safe_df = sanitize_for_streamlit(df).copy()
-    html_table = safe_df.to_html(index=False, escape=True)
     st.markdown(
-        f"""
-        <div style="overflow:auto; max-height:{max_height_px}px; border:1px solid #ddd; border-radius:8px; padding:6px; background:#fff;">
-            {html_table}
-        </div>
+        """
+        <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th, td {
+            border: 1px solid #e6e6e6;
+            padding: 8px;
+            text-align: left;
+            vertical-align: top;
+        }
+        th {
+            background-color: #f7f7f7;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+        </style>
         """,
         unsafe_allow_html=True,
     )
 
+    st.markdown(styled_html, unsafe_allow_html=True)
 
-st.title("📊 Data Pipeline Monitoring Dashboard")
-st.caption(
-    "Production-style monitoring dashboard for ETL / ELT pipeline health, last run visibility, SLA adherence, and error tracking."
+
+def render_request_trend(audit_df: pd.DataFrame):
+    if audit_df.empty or "timestamp" not in audit_df.columns or "status" not in audit_df.columns:
+        st.info("No trend data available.")
+        return
+
+    chart_df = audit_df.copy()
+    chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp"], errors="coerce")
+    chart_df = chart_df.dropna(subset=["timestamp"])
+
+    if chart_df.empty:
+        st.info("No valid timestamp data available.")
+        return
+
+    trend_df = (
+        chart_df.assign(request_date=chart_df["timestamp"].dt.date)
+        .groupby(["request_date", "status"])
+        .size()
+        .reset_index(name="count")
+        .pivot(index="request_date", columns="status", values="count")
+        .fillna(0)
+        .sort_index()
+    )
+
+    if trend_df.empty:
+        st.info("No trend data available.")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    for col in trend_df.columns:
+        ax.plot(trend_df.index.astype(str), trend_df[col], marker="o", label=col)
+
+    ax.set_title("Sentiment Request Trend")
+    ax.set_xlabel("Request Date")
+    ax.set_ylabel("Request Count")
+    ax.legend()
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+
+    st.pyplot(fig)
+
+
+def render_label_distribution(audit_df: pd.DataFrame):
+    if audit_df.empty or "label" not in audit_df.columns or "status" not in audit_df.columns:
+        st.info("No label data available.")
+        return
+
+    label_df = audit_df[audit_df["status"] == "SUCCESS"]["label"].value_counts()
+
+    if label_df.empty:
+        st.info("No successful sentiment predictions available.")
+        return
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.bar(label_df.index.astype(str), label_df.values)
+    ax.set_title("Label Distribution")
+    ax.set_xlabel("Sentiment Label")
+    ax.set_ylabel("Count")
+    plt.tight_layout()
+
+    st.pyplot(fig)
+
+
+# ---------------------------
+# Resource loading
+# ---------------------------
+@st.cache_resource
+def load_vader():
+    try:
+        nltk.data.find("sentiment/vader_lexicon.zip")
+    except LookupError:
+        nltk.download("vader_lexicon")
+    return SentimentIntensityAnalyzer()
+
+
+@st.cache_resource
+def load_transformer_resources():
+    """
+    Optional transformer loader.
+    Only used if user selects transformer mode.
+    """
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    from scipy.special import softmax
+
+    model_name = "cardiffnlp/twitter-roberta-base-sentiment"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(model_name)
+    return tokenizer, model, softmax
+
+
+# ---------------------------
+# Core analysis functions
+# ---------------------------
+def analyze_vader(text: str) -> dict:
+    sia = load_vader()
+    scores = sia.polarity_scores(text)
+
+    compound = scores["compound"]
+    if compound >= 0.05:
+        label = "Positive"
+    elif compound <= -0.05:
+        label = "Negative"
+    else:
+        label = "Neutral"
+
+    return {
+        "engine": "NLTK Vader",
+        "label": label,
+        "negative_score": scores["neg"],
+        "neutral_score": scores["neu"],
+        "positive_score": scores["pos"],
+        "compound_score": scores["compound"],
+    }
+
+
+def analyze_roberta(text: str) -> dict:
+    tokenizer, model, softmax = load_transformer_resources()
+    encoded_text = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    output = model(**encoded_text)
+    scores = output.logits[0].detach().numpy()
+    probs = softmax(scores)
+
+    labels = ["Negative", "Neutral", "Positive"]
+    best_idx = probs.argmax()
+
+    return {
+        "engine": "RoBERTa",
+        "label": labels[best_idx],
+        "negative_score": float(probs[0]),
+        "neutral_score": float(probs[1]),
+        "positive_score": float(probs[2]),
+        "compound_score": None,
+    }
+
+
+# ---------------------------
+# Audit log helpers
+# ---------------------------
+def write_audit_log(record: dict):
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def read_audit_log() -> pd.DataFrame:
+    if not LOG_FILE.exists():
+        return pd.DataFrame(
+            columns=[
+                "timestamp",
+                "engine",
+                "input_text",
+                "text_length",
+                "label",
+                "negative_score",
+                "neutral_score",
+                "positive_score",
+                "compound_score",
+                "status",
+                "error_message",
+            ]
+        )
+
+    rows = []
+    with open(LOG_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    return pd.DataFrame(rows)
+
+
+# ---------------------------
+# Batch processing
+# ---------------------------
+def process_batch(df: pd.DataFrame, text_column: str, engine: str) -> pd.DataFrame:
+    results = []
+
+    for text in df[text_column].fillna("").astype(str):
+        event_time = datetime.utcnow().isoformat()
+
+        try:
+            if engine == "NLTK Vader":
+                result = analyze_vader(text)
+            else:
+                result = analyze_roberta(text)
+
+            record = {
+                "timestamp": event_time,
+                "engine": result["engine"],
+                "input_text": text,
+                "text_length": len(text),
+                "label": result["label"],
+                "negative_score": result["negative_score"],
+                "neutral_score": result["neutral_score"],
+                "positive_score": result["positive_score"],
+                "compound_score": result["compound_score"],
+                "status": "SUCCESS",
+                "error_message": None,
+            }
+        except Exception as e:
+            record = {
+                "timestamp": event_time,
+                "engine": engine,
+                "input_text": text,
+                "text_length": len(text),
+                "label": None,
+                "negative_score": None,
+                "neutral_score": None,
+                "positive_score": None,
+                "compound_score": None,
+                "status": "FAILED",
+                "error_message": str(e),
+            }
+
+        write_audit_log(record)
+        results.append(record)
+
+    return pd.DataFrame(results)
+
+
+# ---------------------------
+# UI
+# ---------------------------
+st.title("📈 Text Sentiment Pipeline Dashboard")
+st.caption("A production-style sentiment app with batch processing, audit logs, and monitoring metrics.")
+
+engine = st.radio(
+    "Select analysis engine",
+    ["NLTK Vader", "RoBERTa"],
+    horizontal=True,
 )
 
-df = generate_pipeline_runs(days=30)
+tab1, tab2, tab3 = st.tabs(["Single Text Analysis", "Batch CSV Upload", "Monitoring Dashboard"])
 
-with st.sidebar:
-    st.header("Filters")
-
-    selected_pipelines = st.multiselect(
-        "Pipeline",
-        sorted(df["pipeline_name"].unique()),
-        default=sorted(df["pipeline_name"].unique()),
+# ---------------------------
+# Tab 1: single text
+# ---------------------------
+with tab1:
+    textinp = st.text_area(
+        "Enter text to analyze",
+        value="I am a good developer and I enjoy solving real-world data problems.",
+        height=140,
     )
 
-    selected_statuses = st.multiselect(
-        "Status",
-        ["Success", "Failed", "Running", "Delayed"],
-        default=["Success", "Failed", "Running", "Delayed"],
-    )
+    c1, c2 = st.columns([1, 4])
+    with c1:
+        run_single = st.button("Run Analysis", use_container_width=True)
 
-    selected_owners = st.multiselect(
-        "Owner",
-        sorted(df["owner"].unique()),
-        default=sorted(df["owner"].unique()),
-    )
+    with c2:
+        st.metric("Characters", len(textinp))
+        st.metric("Words", len(textinp.split()) if textinp.strip() else 0)
 
-    last_n_days = st.slider("Last N days", 1, 30, 14)
+    if run_single:
+        event_time = datetime.utcnow().isoformat()
 
-filtered = df[
-    (df["pipeline_name"].isin(selected_pipelines))
-    & (df["status"].isin(selected_statuses))
-    & (df["owner"].isin(selected_owners))
-    & (df["scheduled_time"] >= (datetime.now() - timedelta(days=last_n_days)))
-].copy()
+        try:
+            if engine == "NLTK Vader":
+                result = analyze_vader(textinp)
+            else:
+                result = analyze_roberta(textinp)
 
-total_pipelines, running_count, failed_count, success_rate, sla_breach_rate, total_records = build_kpis(filtered)
+            st.subheader("Prediction Result")
+            if result["label"] == "Positive":
+                st.success(f"Label: {result['label']}")
+            elif result["label"] == "Negative":
+                st.error(f"Label: {result['label']}")
+            else:
+                st.info(f"Label: {result['label']}")
 
-col1, col2, col3, col4, col5, col6 = st.columns(6)
-col1.metric("Pipelines", total_pipelines)
-col2.metric("Running", running_count)
-col3.metric("Failed", failed_count)
-col4.metric("Success Rate", f"{success_rate}%")
-col5.metric("SLA Breach Rate", f"{sla_breach_rate}%")
-col6.metric("Latest Records", f"{total_records:,}")
+            result_df = pd.DataFrame([result])
+            render_html_table(result_df, height=180)
 
-st.markdown("---")
+            record = {
+                "timestamp": event_time,
+                "engine": result["engine"],
+                "input_text": textinp,
+                "text_length": len(textinp),
+                "label": result["label"],
+                "negative_score": result["negative_score"],
+                "neutral_score": result["neutral_score"],
+                "positive_score": result["positive_score"],
+                "compound_score": result["compound_score"],
+                "status": "SUCCESS",
+                "error_message": None,
+            }
+            write_audit_log(record)
 
-st.subheader("Current Pipeline Status")
-snapshot_df = latest_pipeline_snapshot(filtered)
-render_html_table(snapshot_df, max_height_px=360)
+        except Exception as e:
+            st.error(f"Analysis failed: {e}")
 
-left_col, right_col = st.columns([1.2, 1])
+            record = {
+                "timestamp": event_time,
+                "engine": engine,
+                "input_text": textinp,
+                "text_length": len(textinp),
+                "label": None,
+                "negative_score": None,
+                "neutral_score": None,
+                "positive_score": None,
+                "compound_score": None,
+                "status": "FAILED",
+                "error_message": str(e),
+            }
+            write_audit_log(record)
 
-with left_col:
-    st.subheader("Run Trend by Status")
-    trend_df = (
-        filtered.assign(run_date=filtered["scheduled_time"].dt.date)
-        .groupby(["run_date", "status"])
-        .size()
-        .reset_index(name="runs")
-        .pivot(index="run_date", columns="status", values="runs")
-        .fillna(0)
-    )
-    st.line_chart(trend_df)
+# ---------------------------
+# Tab 2: batch upload
+# ---------------------------
+with tab2:
+    st.write("Upload a CSV with a text column for batch sentiment processing.")
 
-with right_col:
-    st.subheader("SLA Breaches by Pipeline")
-    breach_df = (
-        filtered.groupby("pipeline_name")["sla_breached"]
-        .sum()
-        .sort_values(ascending=False)
-    )
-    st.bar_chart(breach_df)
+    uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
-left_col_2, right_col_2 = st.columns(2)
+    if uploaded_file is not None:
+        upload_df = pd.read_csv(uploaded_file)
+        render_html_table(upload_df.head(10), height=240)
 
-with left_col_2:
-    st.subheader("Record Counts by Pipeline")
-    record_df = (
-        filtered.groupby("pipeline_name")["record_count"]
-        .sum()
-        .sort_values(ascending=False)
-    )
-    st.bar_chart(record_df)
+        if not upload_df.empty:
+            text_column = st.selectbox("Select text column", upload_df.columns.tolist())
 
-with right_col_2:
-    st.subheader("Average Runtime by Pipeline (mins)")
-    runtime_df = (
-        filtered.groupby("pipeline_name")["duration_minutes"]
-        .mean()
-        .sort_values(ascending=False)
-    )
-    st.bar_chart(runtime_df)
+            if st.button("Run Batch Processing"):
+                batch_result_df = process_batch(upload_df, text_column, engine)
+                st.success("Batch processing completed.")
+                render_html_table(batch_result_df, height=320)
 
-st.markdown("---")
+                csv_data = batch_result_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "Download Results CSV",
+                    data=csv_data,
+                    file_name="sentiment_batch_results.csv",
+                    mime="text/csv",
+                )
 
-st.subheader("Recent Error Logs")
-error_logs = filtered[filtered["error_message"].notna()].copy()
-error_logs = error_logs.sort_values("scheduled_time", ascending=False)[
-    ["scheduled_time", "pipeline_name", "status", "duration_minutes", "error_message"]
-]
-error_logs["scheduled_time"] = error_logs["scheduled_time"].apply(format_dt)
+# ---------------------------
+# Tab 3: monitoring
+# ---------------------------
+with tab3:
+    st.subheader("Operational Monitoring")
 
-if error_logs.empty:
-    st.success("No error logs found for the selected filters.")
-else:
-    display_error_logs = error_logs.rename(
-        columns={
-            "scheduled_time": "Run Time",
-            "pipeline_name": "Pipeline",
-            "status": "Status",
-            "duration_minutes": "Duration (mins)",
-            "error_message": "Error Message",
-        }
-    )
-    render_html_table(display_error_logs, max_height_px=360)
+    audit_df = read_audit_log()
 
-with st.expander("Raw Pipeline Run Data"):
-    raw_df = filtered.copy()
-    raw_df["scheduled_time"] = raw_df["scheduled_time"].apply(format_dt)
-    raw_df["actual_start"] = raw_df["actual_start"].apply(format_dt)
-    raw_df["completed_at"] = raw_df["completed_at"].apply(format_dt)
-    render_html_table(raw_df, max_height_px=500)
+    if audit_df.empty:
+        st.info("No sentiment requests logged yet.")
+    else:
+        total_requests = len(audit_df)
+        success_count = int((audit_df["status"] == "SUCCESS").sum())
+        failure_count = int((audit_df["status"] == "FAILED").sum())
+        success_rate = round((success_count / total_requests) * 100, 2)
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Requests", total_requests)
+        m2.metric("Successful", success_count)
+        m3.metric("Failed", failure_count)
+        m4.metric("Success Rate", f"{success_rate}%")
+
+        st.write("### Request Trend")
+        render_request_trend(audit_df)
+
+        st.write("### Label Distribution")
+        render_label_distribution(audit_df)
+
+        st.write("### Audit Log")
+        render_html_table(audit_df, height=360)
