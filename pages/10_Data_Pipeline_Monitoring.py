@@ -155,6 +155,27 @@ def build_kpis(df: pd.DataFrame):
     return total_pipelines, running_count, failed_count, success_rate, sla_breach_rate, total_records
 
 
+def sanitize_for_streamlit(df: pd.DataFrame) -> pd.DataFrame:
+    safe_df = df.copy()
+    string_cols = safe_df.select_dtypes(include=["string"]).columns
+    for col in string_cols:
+        safe_df[col] = safe_df[col].astype("object")
+    return safe_df
+
+
+def render_html_table(df: pd.DataFrame, max_height_px: int = 420) -> None:
+    safe_df = sanitize_for_streamlit(df).copy()
+    html_table = safe_df.to_html(index=False, escape=True)
+    st.markdown(
+        f"""
+        <div style="overflow:auto; max-height:{max_height_px}px; border:1px solid #ddd; border-radius:8px; padding:6px; background:#fff;">
+            {html_table}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 st.title("📊 Data Pipeline Monitoring Dashboard")
 st.caption(
     "Production-style monitoring dashboard for ETL / ELT pipeline health, last run visibility, SLA adherence, and error tracking."
@@ -206,7 +227,7 @@ st.markdown("---")
 
 st.subheader("Current Pipeline Status")
 snapshot_df = latest_pipeline_snapshot(filtered)
-st.dataframe(snapshot_df, use_container_width=True)
+render_html_table(snapshot_df, max_height_px=360)
 
 left_col, right_col = st.columns([1.2, 1])
 
@@ -263,22 +284,20 @@ error_logs["scheduled_time"] = error_logs["scheduled_time"].apply(format_dt)
 if error_logs.empty:
     st.success("No error logs found for the selected filters.")
 else:
-    st.dataframe(
-        error_logs.rename(
-            columns={
-                "scheduled_time": "Run Time",
-                "pipeline_name": "Pipeline",
-                "status": "Status",
-                "duration_minutes": "Duration (mins)",
-                "error_message": "Error Message",
-            }
-        ),
-        use_container_width=True,
+    display_error_logs = error_logs.rename(
+        columns={
+            "scheduled_time": "Run Time",
+            "pipeline_name": "Pipeline",
+            "status": "Status",
+            "duration_minutes": "Duration (mins)",
+            "error_message": "Error Message",
+        }
     )
+    render_html_table(display_error_logs, max_height_px=360)
 
 with st.expander("Raw Pipeline Run Data"):
     raw_df = filtered.copy()
     raw_df["scheduled_time"] = raw_df["scheduled_time"].apply(format_dt)
     raw_df["actual_start"] = raw_df["actual_start"].apply(format_dt)
     raw_df["completed_at"] = raw_df["completed_at"].apply(format_dt)
-    st.dataframe(raw_df, use_container_width=True)
+    render_html_table(raw_df, max_height_px=500)
