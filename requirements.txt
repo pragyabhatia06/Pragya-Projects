@@ -16,3 +16,4 @@ vaderSentiment
 transformers
 sacremoses
 bs4
+beautifulsoup4
