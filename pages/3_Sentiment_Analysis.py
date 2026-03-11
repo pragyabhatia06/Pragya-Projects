@@ -2,6 +2,7 @@ from datetime import datetime
 from pathlib import Path
 import json
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 import nltk
@@ -14,6 +15,136 @@ st.set_page_config(
 )
 
 LOG_FILE = Path("sentiment_audit_log.jsonl")
+
+
+# ---------------------------
+# Safe display helpers
+# ---------------------------
+def safe_str(value):
+    if pd.isna(value):
+        return ""
+    return str(value)
+
+
+def make_display_safe(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+
+    out = df.copy()
+    for col in out.columns:
+        out[col] = out[col].apply(safe_str)
+    return out
+
+
+def render_html_table(df: pd.DataFrame, height: int = 360):
+    if df.empty:
+        st.info("No data available.")
+        return
+
+    safe_df = make_display_safe(df)
+
+    html = safe_df.to_html(index=False, escape=False)
+    styled_html = f"""
+    <div style="
+        max-height:{height}px;
+        overflow:auto;
+        border:1px solid #ddd;
+        border-radius:8px;
+        padding:8px;
+        background-color:white;
+    ">
+        {html}
+    </div>
+    """
+
+    st.markdown(
+        """
+        <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th, td {
+            border: 1px solid #e6e6e6;
+            padding: 8px;
+            text-align: left;
+            vertical-align: top;
+        }
+        th {
+            background-color: #f7f7f7;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(styled_html, unsafe_allow_html=True)
+
+
+def render_request_trend(audit_df: pd.DataFrame):
+    if audit_df.empty or "timestamp" not in audit_df.columns or "status" not in audit_df.columns:
+        st.info("No trend data available.")
+        return
+
+    chart_df = audit_df.copy()
+    chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp"], errors="coerce")
+    chart_df = chart_df.dropna(subset=["timestamp"])
+
+    if chart_df.empty:
+        st.info("No valid timestamp data available.")
+        return
+
+    trend_df = (
+        chart_df.assign(request_date=chart_df["timestamp"].dt.date)
+        .groupby(["request_date", "status"])
+        .size()
+        .reset_index(name="count")
+        .pivot(index="request_date", columns="status", values="count")
+        .fillna(0)
+        .sort_index()
+    )
+
+    if trend_df.empty:
+        st.info("No trend data available.")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    for col in trend_df.columns:
+        ax.plot(trend_df.index.astype(str), trend_df[col], marker="o", label=col)
+
+    ax.set_title("Sentiment Request Trend")
+    ax.set_xlabel("Request Date")
+    ax.set_ylabel("Request Count")
+    ax.legend()
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+
+    st.pyplot(fig)
+
+
+def render_label_distribution(audit_df: pd.DataFrame):
+    if audit_df.empty or "label" not in audit_df.columns or "status" not in audit_df.columns:
+        st.info("No label data available.")
+        return
+
+    label_df = audit_df[audit_df["status"] == "SUCCESS"]["label"].value_counts()
+
+    if label_df.empty:
+        st.info("No successful sentiment predictions available.")
+        return
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.bar(label_df.index.astype(str), label_df.values)
+    ax.set_title("Label Distribution")
+    ax.set_xlabel("Sentiment Label")
+    ax.set_ylabel("Count")
+    plt.tight_layout()
+
+    st.pyplot(fig)
 
 
 # ---------------------------
@@ -225,7 +356,7 @@ with tab1:
                 st.info(f"Label: {result['label']}")
 
             result_df = pd.DataFrame([result])
-            st.dataframe(result_df, use_container_width=True)
+            render_html_table(result_df, height=180)
 
             record = {
                 "timestamp": event_time,
@@ -270,7 +401,7 @@ with tab2:
 
     if uploaded_file is not None:
         upload_df = pd.read_csv(uploaded_file)
-        st.dataframe(upload_df.head(10), use_container_width=True)
+        render_html_table(upload_df.head(10), height=240)
 
         if not upload_df.empty:
             text_column = st.selectbox("Select text column", upload_df.columns.tolist())
@@ -278,7 +409,7 @@ with tab2:
             if st.button("Run Batch Processing"):
                 batch_result_df = process_batch(upload_df, text_column, engine)
                 st.success("Batch processing completed.")
-                st.dataframe(batch_result_df, use_container_width=True)
+                render_html_table(batch_result_df, height=320)
 
                 csv_data = batch_result_df.to_csv(index=False).encode("utf-8")
                 st.download_button(
@@ -300,8 +431,8 @@ with tab3:
         st.info("No sentiment requests logged yet.")
     else:
         total_requests = len(audit_df)
-        success_count = (audit_df["status"] == "SUCCESS").sum()
-        failure_count = (audit_df["status"] == "FAILED").sum()
+        success_count = int((audit_df["status"] == "SUCCESS").sum())
+        failure_count = int((audit_df["status"] == "FAILED").sum())
         success_rate = round((success_count / total_requests) * 100, 2)
 
         m1, m2, m3, m4 = st.columns(4)
@@ -310,23 +441,11 @@ with tab3:
         m3.metric("Failed", failure_count)
         m4.metric("Success Rate", f"{success_rate}%")
 
-        audit_df["timestamp"] = pd.to_datetime(audit_df["timestamp"], errors="coerce")
-
-        if audit_df["timestamp"].notna().any():
-            trend_df = (
-                audit_df.assign(request_date=audit_df["timestamp"].dt.date)
-                .groupby(["request_date", "status"])
-                .size()
-                .reset_index(name="count")
-                .pivot(index="request_date", columns="status", values="count")
-                .fillna(0)
-            )
-            st.write("### Request Trend")
-            st.line_chart(trend_df)
+        st.write("### Request Trend")
+        render_request_trend(audit_df)
 
         st.write("### Label Distribution")
-        label_df = audit_df[audit_df["status"] == "SUCCESS"]["label"].value_counts()
-        st.bar_chart(label_df)
+        render_label_distribution(audit_df)
 
         st.write("### Audit Log")
-        st.dataframe(audit_df, use_container_width=True)
+        render_html_table(audit_df, height=360)
