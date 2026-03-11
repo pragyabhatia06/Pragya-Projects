@@ -246,7 +246,7 @@ else:
         st.line_chart(trend_df)
 
     st.write("### Audit Log")
-    st.dataframe(audit_df, use_container_width=True, hide_index=True)
+    st.dataframe(audit_df, use_container_width=True)
 
 
 # -------------------------------
@@ -259,4 +259,4 @@ session_df = pd.DataFrame(st.session_state.history)
 if session_df.empty:
     st.info("No translations in this session yet.")
 else:
-    st.dataframe(session_df, use_container_width=True, hide_index=True)
+    st.dataframe(session_df, use_container_width=True)
