@@ -55,7 +55,7 @@ def show_safe_dataframe(df: pd.DataFrame):
         st.info("No data available.")
         return
 
-    st.dataframe(make_streamlit_safe(df), use_container_width=True, hide_index=True)
+    st.dataframe(make_streamlit_safe(df), use_container_width=True)
 
 
 # =====================================
