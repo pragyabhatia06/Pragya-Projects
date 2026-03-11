@@ -225,7 +225,7 @@ with tab1:
                 st.info(f"Label: {result['label']}")
 
             result_df = pd.DataFrame([result])
-            st.dataframe(result_df, use_container_width=True, hide_index=True)
+            st.dataframe(result_df, use_container_width=True)
 
             record = {
                 "timestamp": event_time,
@@ -270,7 +270,7 @@ with tab2:
 
     if uploaded_file is not None:
         upload_df = pd.read_csv(uploaded_file)
-        st.dataframe(upload_df.head(10), use_container_width=True, hide_index=True)
+        st.dataframe(upload_df.head(10), use_container_width=True)
 
         if not upload_df.empty:
             text_column = st.selectbox("Select text column", upload_df.columns.tolist())
@@ -278,7 +278,7 @@ with tab2:
             if st.button("Run Batch Processing"):
                 batch_result_df = process_batch(upload_df, text_column, engine)
                 st.success("Batch processing completed.")
-                st.dataframe(batch_result_df, use_container_width=True, hide_index=True)
+                st.dataframe(batch_result_df, use_container_width=True)
 
                 csv_data = batch_result_df.to_csv(index=False).encode("utf-8")
                 st.download_button(
@@ -329,4 +329,4 @@ with tab3:
         st.bar_chart(label_df)
 
         st.write("### Audit Log")
-        st.dataframe(audit_df, use_container_width=True, hide_index=True)
+        st.dataframe(audit_df, use_container_width=True)
