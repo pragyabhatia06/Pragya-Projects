@@ -137,7 +137,7 @@ if st.button("Run Prediction", use_container_width=True):
             st.metric("Predicted Positive Probability", f"{probability:.2%}")
 
         with st.expander("Input Features Sent to Model"):
-            st.dataframe(input_df, use_container_width=True, hide_index=True)
+            st.dataframe(input_df, use_container_width=True)
 
     except Exception as e:
         st.error(f"Prediction failed: {e}")

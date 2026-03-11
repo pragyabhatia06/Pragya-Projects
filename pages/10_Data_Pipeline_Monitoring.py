@@ -206,7 +206,7 @@ st.markdown("---")
 
 st.subheader("Current Pipeline Status")
 snapshot_df = latest_pipeline_snapshot(filtered)
-st.dataframe(snapshot_df, use_container_width=True, hide_index=True)
+st.dataframe(snapshot_df, use_container_width=True)
 
 left_col, right_col = st.columns([1.2, 1])
 
@@ -274,7 +274,6 @@ else:
             }
         ),
         use_container_width=True,
-        hide_index=True,
     )
 
 with st.expander("Raw Pipeline Run Data"):
@@ -282,4 +281,4 @@ with st.expander("Raw Pipeline Run Data"):
     raw_df["scheduled_time"] = raw_df["scheduled_time"].apply(format_dt)
     raw_df["actual_start"] = raw_df["actual_start"].apply(format_dt)
     raw_df["completed_at"] = raw_df["completed_at"].apply(format_dt)
-    st.dataframe(raw_df, use_container_width=True, hide_index=True)
+    st.dataframe(raw_df, use_container_width=True)
