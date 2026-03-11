@@ -17,3 +17,4 @@ transformers
 sacremoses
 bs4
 beautifulsoup4
+plotly
