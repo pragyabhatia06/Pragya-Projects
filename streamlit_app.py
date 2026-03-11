@@ -33,7 +33,7 @@ def run():
         **👈 Select a project demo from the sidebar** to see some examples!
         ### Current Demo Project - 
         - Monkey Pox Prediction [Predictor](https://pragya-projects.streamlit.app/Monkey_Pox_Predictor)
-        - Free Translator to English Language [Translator](https://pragya-projects.streamlit.app/Translator)
+        - Free Translator to English Language [Translator](https://pragya-projects.streamlit.app/Translation_Pipeline_Demo)
         - Sentiment Analysis [Sentiment_Analysis](https://pragya-projects.streamlit.app/Sentiment_Analysis)
         - Azure Function App with Web Scraping using BeautifulSoup [Wikipedia Scrape](https://pragya-projects.streamlit.app/Azure_Web_Scrap_Wiki)
         - QnA Chatbot using Meta Hugging Face [ChatBot](https://pragya-projects.streamlit.app/llama2_QnA_Chatbot)
