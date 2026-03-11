@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 import json
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
@@ -18,20 +19,124 @@ LOG_FILE = Path("translation_audit_log.jsonl")
 
 
 # -------------------------------
+# Safe display helpers
+# -------------------------------
+def safe_str(value):
+    if pd.isna(value):
+        return ""
+    return str(value)
+
+
+def make_display_safe(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+
+    out = df.copy()
+    for col in out.columns:
+        out[col] = out[col].apply(safe_str)
+    return out
+
+
+def render_html_table(df: pd.DataFrame, height: int = 360):
+    if df.empty:
+        st.info("No data available.")
+        return
+
+    safe_df = make_display_safe(df)
+
+    html = safe_df.to_html(index=False, escape=False)
+    styled_html = f"""
+    <div style="
+        max-height:{height}px;
+        overflow:auto;
+        border:1px solid #ddd;
+        border-radius:8px;
+        padding:8px;
+        background-color:white;
+    ">
+        {html}
+    </div>
+    """
+
+    st.markdown(
+        """
+        <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th, td {
+            border: 1px solid #e6e6e6;
+            padding: 8px;
+            text-align: left;
+            vertical-align: top;
+        }
+        th {
+            background-color: #f7f7f7;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(styled_html, unsafe_allow_html=True)
+
+
+def render_request_trend(audit_df: pd.DataFrame):
+    if audit_df.empty or "timestamp" not in audit_df.columns or "status" not in audit_df.columns:
+        st.info("No trend data available.")
+        return
+
+    chart_df = audit_df.copy()
+    chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp"], errors="coerce")
+    chart_df = chart_df.dropna(subset=["timestamp"])
+
+    if chart_df.empty:
+        st.info("No valid timestamp data available.")
+        return
+
+    trend_df = (
+        chart_df.assign(request_date=chart_df["timestamp"].dt.date)
+        .groupby(["request_date", "status"])
+        .size()
+        .reset_index(name="count")
+        .pivot(index="request_date", columns="status", values="count")
+        .fillna(0)
+        .sort_index()
+    )
+
+    if trend_df.empty:
+        st.info("No trend data available.")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    for col in trend_df.columns:
+        ax.plot(trend_df.index.astype(str), trend_df[col], marker="o", label=col)
+
+    ax.set_title("Translation Request Trend")
+    ax.set_xlabel("Request Date")
+    ax.set_ylabel("Request Count")
+    ax.legend()
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+
+    st.pyplot(fig)
+
+
+# -------------------------------
 # Dependency-safe model loading
 # -------------------------------
 @st.cache_resource
 def load_translation_model():
-    """
-    Load tokenizer and model once per app session.
-    This is cached to avoid repeated heavy downloads.
-    """
     try:
         from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
     except ImportError as e:
         raise ImportError(
-            "Required package 'transformers' is not installed. "
-            "Add it to requirements.txt."
+            "Required package 'transformers' is not installed. Add it to requirements.txt."
         ) from e
 
     try:
@@ -40,8 +145,8 @@ def load_translation_model():
         return tokenizer, model
     except Exception as e:
         raise RuntimeError(
-            f"Model loading failed for '{MODEL_NAME}'. "
-            "Check whether 'sentencepiece', 'torch', and model download access are available."
+            f"Model loading failed for '{MODEL_NAME}'. Check whether 'sentencepiece', "
+            "'torch', and model download access are available."
         ) from e
 
 
@@ -49,9 +154,6 @@ def load_translation_model():
 # Translation logic
 # -------------------------------
 def translate_to_english(text: str) -> str:
-    """
-    Translate multilingual input to English.
-    """
     tokenizer, model = load_translation_model()
     batch = tokenizer(
         [text],
@@ -69,19 +171,12 @@ def translate_to_english(text: str) -> str:
 # Audit logging
 # -------------------------------
 def write_audit_log(record: dict):
-    """
-    Append translation event to local JSONL audit log.
-    Useful for demoing pipeline logging / observability.
-    """
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def read_audit_log() -> pd.DataFrame:
-    """
-    Read translation audit log into a dataframe.
-    """
     if not LOG_FILE.exists():
         return pd.DataFrame(
             columns=[
@@ -122,8 +217,7 @@ st.caption(
 
 st.markdown(
     """
-###
-This app demonstrates:
+### What this app demonstrates
 - cached model loading
 - structured processing
 - audit logging
@@ -177,9 +271,7 @@ if st.button("Translate to English", use_container_width=True):
 
         except ImportError as e:
             st.error(str(e))
-            st.info(
-                "Install the missing packages in requirements.txt and redeploy the app."
-            )
+            st.info("Install the missing packages in requirements.txt and redeploy the app.")
 
             record = {
                 "timestamp": event_time,
@@ -221,8 +313,8 @@ if audit_df.empty:
     st.info("No translation activity logged yet.")
 else:
     total_requests = len(audit_df)
-    success_count = (audit_df["status"] == "SUCCESS").sum()
-    failure_count = (audit_df["status"] == "FAILED").sum()
+    success_count = int((audit_df["status"] == "SUCCESS").sum())
+    failure_count = int((audit_df["status"] == "FAILED").sum())
     success_rate = round((success_count / total_requests) * 100, 2) if total_requests else 0
 
     m1, m2, m3, m4 = st.columns(4)
@@ -231,22 +323,11 @@ else:
     m3.metric("Failed", failure_count)
     m4.metric("Success Rate", f"{success_rate}%")
 
-    if "timestamp" in audit_df.columns:
-        audit_df["timestamp"] = pd.to_datetime(audit_df["timestamp"], errors="coerce")
-        trend_df = (
-            audit_df.assign(request_date=audit_df["timestamp"].dt.date)
-            .groupby(["request_date", "status"])
-            .size()
-            .reset_index(name="count")
-            .pivot(index="request_date", columns="status", values="count")
-            .fillna(0)
-        )
-
-        st.write("### Request Trend")
-        st.line_chart(trend_df)
+    st.write("### Request Trend")
+    render_request_trend(audit_df)
 
     st.write("### Audit Log")
-    st.dataframe(audit_df, use_container_width=True)
+    render_html_table(audit_df, height=320)
 
 
 # -------------------------------
@@ -259,4 +340,4 @@ session_df = pd.DataFrame(st.session_state.history)
 if session_df.empty:
     st.info("No translations in this session yet.")
 else:
-    st.dataframe(session_df, use_container_width=True)
+    render_html_table(session_df, height=280)
