@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import requests
 import streamlit as st
@@ -31,31 +32,94 @@ def safe_str(value):
     return str(value)
 
 
-def make_streamlit_safe(df: pd.DataFrame) -> pd.DataFrame:
+def make_display_safe(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Converts all columns to plain string-compatible values
-    to avoid Streamlit Arrow/LargeUtf8 rendering errors.
+    Convert dataframe values to plain Python-safe display values.
+    This avoids Streamlit Arrow serialization issues.
     """
     if df.empty:
         return df.copy()
 
-    safe_df = df.copy()
-
-    for col in safe_df.columns:
-        try:
-            safe_df[col] = safe_df[col].apply(safe_str)
-        except Exception:
-            safe_df[col] = safe_df[col].astype(str)
-
-    return safe_df
+    out = df.copy()
+    for col in out.columns:
+        out[col] = out[col].apply(safe_str)
+    return out
 
 
-def show_safe_dataframe(df: pd.DataFrame):
+def render_html_table(df: pd.DataFrame, height: int = 420):
+    """
+    Render dataframe as HTML instead of st.dataframe to avoid LargeUtf8 Arrow issues.
+    """
     if df.empty:
         st.info("No data available.")
         return
 
-    st.dataframe(make_streamlit_safe(df), use_container_width=True)
+    safe_df = make_display_safe(df)
+
+    html = safe_df.to_html(index=False, escape=False)
+    styled_html = f"""
+    <div style="
+        max-height:{height}px;
+        overflow:auto;
+        border:1px solid #ddd;
+        border-radius:8px;
+        padding:8px;
+        background-color:white;
+    ">
+        {html}
+    </div>
+    """
+
+    st.markdown(
+        """
+        <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th, td {
+            border: 1px solid #e6e6e6;
+            padding: 8px;
+            text-align: left;
+            vertical-align: top;
+        }
+        th {
+            background-color: #f7f7f7;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(styled_html, unsafe_allow_html=True)
+
+
+def render_duration_chart(df: pd.DataFrame):
+    if df.empty or "duration_seconds" not in df.columns or "started_at" not in df.columns:
+        st.info("No duration data available.")
+        return
+
+    chart_df = df.copy()
+    chart_df["started_at"] = pd.to_datetime(chart_df["started_at"], errors="coerce")
+    chart_df["duration_seconds"] = pd.to_numeric(chart_df["duration_seconds"], errors="coerce")
+    chart_df = chart_df.dropna(subset=["started_at", "duration_seconds"]).sort_values("started_at")
+
+    if chart_df.empty:
+        st.info("No valid chart data available.")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(chart_df["started_at"], chart_df["duration_seconds"], marker="o")
+    ax.set_title("Pipeline Run Duration Trend")
+    ax.set_xlabel("Started At")
+    ax.set_ylabel("Duration (seconds)")
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+
+    st.pyplot(fig)
 
 
 # =====================================
@@ -379,7 +443,7 @@ def read_quotes_db() -> pd.DataFrame:
 
 
 # =====================================
-# STREAMLIT UI
+# UI
 # =====================================
 
 st.set_page_config(
@@ -417,7 +481,7 @@ with col_a:
             st.json(result)
 
             st.subheader("Latest Curated Data")
-            show_safe_dataframe(curated_df.head(20))
+            render_html_table(curated_df.head(20), height=300)
 
             st.cache_data.clear()
 
@@ -455,24 +519,11 @@ with left:
     if logs_df.empty:
         st.info("No pipeline runs yet.")
     else:
-        show_safe_dataframe(logs_df)
+        render_html_table(logs_df, height=350)
 
 with right:
     st.subheader("Run Duration Trend")
-    if logs_df.empty or "duration_seconds" not in logs_df.columns:
-        st.info("No duration data available.")
-    else:
-        chart_df = logs_df.copy()
-        if "started_at" in chart_df.columns:
-            chart_df["started_at"] = pd.to_datetime(chart_df["started_at"], errors="coerce")
-            chart_df = chart_df.sort_values("started_at")
-            chart_df = chart_df.dropna(subset=["started_at"])
-            if not chart_df.empty:
-                st.line_chart(chart_df.set_index("started_at")["duration_seconds"])
-            else:
-                st.info("No valid timestamp data available.")
-        else:
-            st.info("No started_at column available.")
+    render_duration_chart(logs_df)
 
 st.markdown("---")
 
@@ -480,7 +531,7 @@ st.subheader("Loaded Quotes")
 if quotes_df.empty:
     st.info("No quotes loaded yet. Run the pipeline first.")
 else:
-    show_safe_dataframe(quotes_df)
+    render_html_table(quotes_df, height=420)
 
 st.markdown("---")
 
@@ -494,6 +545,6 @@ with st.expander("Preview raw SQLite tables"):
         finally:
             conn.close()
 
-        show_safe_dataframe(preview_df)
+        render_html_table(preview_df, height=320)
     else:
         st.info("Database not found yet.")
