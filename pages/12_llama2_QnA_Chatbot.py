@@ -345,7 +345,11 @@ def get_safe_hf_token():
     Safer secret access across environments.
     """
     try:
-        return st.secrets["HF_API_TOKEN"]
+        try:
+            hf_token = st.secrets["HF_API_TOKEN"]
+        except Exception:
+            hf_token = ""
+        return hf_token
     except Exception:
         return ""
 
@@ -435,71 +439,114 @@ if user_prompt:
 
     assistant_response = ""
     start_time = time.time()
-    mode_used = "fallback-no-token"
+    mode_used = "smart-fallback"
 
     try:
         full_prompt = build_prompt(st.session_state.messages, system_prompt)
 
-        # Use Hugging Face if token exists, otherwise use built-in fallback response generator
-        if effective_hf_token:
+        if hf_token:
             mode_used = "huggingface-api"
+
             if supports_chat_ui():
                 with st.chat_message("assistant"):
-                    with st.spinner("Generating response from Hugging Face model..."):
+                    with st.spinner("Generating response..."):
                         assistant_response = query_huggingface(
                             model_id=selected_model_id,
                             prompt=full_prompt,
-                            hf_token=effective_hf_token,
+                            hf_token=hf_token,
                             max_new_tokens=max_new_tokens,
                             temperature=temperature,
                             top_p=top_p
                         )
                         st.write(assistant_response)
             else:
-                with st.spinner("Generating response from Hugging Face model..."):
+                with st.spinner("Generating response..."):
                     assistant_response = query_huggingface(
                         model_id=selected_model_id,
                         prompt=full_prompt,
-                        hf_token=effective_hf_token,
+                        hf_token=hf_token,
                         max_new_tokens=max_new_tokens,
                         temperature=temperature,
                         top_p=top_p
                     )
                 st.markdown(f"**Assistant:** {assistant_response}")
+
         else:
-            mode_used = "smart-fallback"
+            lower_q = user_prompt.lower().strip()
+
+            if "sql" in lower_q:
+                assistant_response = (
+                    "SQL is used to store, retrieve, filter, join, and analyze structured data in databases.\n\n"
+                    "Common operations:\n"
+                    "- SELECT: read data\n"
+                    "- WHERE: filter rows\n"
+                    "- JOIN: combine tables\n"
+                    "- GROUP BY: aggregate data\n"
+                    "- WINDOW FUNCTIONS: ranking, deduplication, running totals\n\n"
+                    "Example:\n"
+                    "SELECT customer_id, SUM(amount) AS total_amount\n"
+                    "FROM orders\n"
+                    "WHERE order_date >= CURRENT_DATE - INTERVAL '30 days'\n"
+                    "GROUP BY customer_id;"
+                )
+            elif lower_q in ["hi", "hello", "hey"] or lower_q.startswith("hi "):
+                assistant_response = (
+                    "Hello! I can help with SQL, PostgreSQL, pipelines, Airflow, Spark, APIs, and Streamlit projects."
+                )
+            else:
+                assistant_response = (
+                    f"You asked: {user_prompt}\n\n"
+                    "No API token is configured, so this answer is coming from the built-in fallback mode.\n"
+                    "Ask me about SQL, data engineering, APIs, Airflow, Spark, or system design."
+                )
+
             if supports_chat_ui():
                 with st.chat_message("assistant"):
-                    with st.spinner("Generating response using built-in fallback engine..."):
-                        assistant_response = generate_fallback_response(
-                            user_prompt=user_prompt,
-                            messages=st.session_state.messages,
-                            system_prompt=system_prompt
-                        )
-                        st.write(assistant_response)
+                    st.write(assistant_response)
             else:
-                with st.spinner("Generating response using built-in fallback engine..."):
-                    assistant_response = generate_fallback_response(
-                        user_prompt=user_prompt,
-                        messages=st.session_state.messages,
-                        system_prompt=system_prompt
-                    )
                 st.markdown(f"**Assistant:** {assistant_response}")
 
         latency = time.time() - start_time
         st.session_state.chat_metrics["total_requests"] += 1
         st.session_state.chat_metrics["last_latency_sec"] = latency
-        st.session_state.chat_metrics["last_mode"] = mode_used
 
         st.session_state.messages.append({"role": "assistant", "content": assistant_response})
 
         log_interaction(
             user_prompt=user_prompt,
             assistant_response=assistant_response,
-            model_name=selected_model_id if effective_hf_token else "built-in-fallback",
+            model_name=selected_model_id if hf_token else "built-in-fallback",
             latency=latency,
-            status="success",
-            mode=mode_used
+            status="success"
+        )
+
+    except Exception as e:
+        latency = time.time() - start_time
+        st.session_state.chat_metrics["total_errors"] += 1
+        st.session_state.chat_metrics["last_latency_sec"] = latency
+
+        fallback_response = (
+            "The external model failed, so the app switched to a safe fallback response.\n\n"
+            f"Your question was: {user_prompt}"
+        )
+
+        st.error(f"Error: {str(e)}")
+
+        if supports_chat_ui():
+            with st.chat_message("assistant"):
+                st.write(fallback_response)
+        else:
+            st.markdown(f"**Assistant:** {fallback_response}")
+
+        st.session_state.messages.append({"role": "assistant", "content": fallback_response})
+
+        log_interaction(
+            user_prompt=user_prompt,
+            assistant_response=fallback_response,
+            model_name="built-in-fallback",
+            latency=latency,
+            status="success-with-fallback",
+            error_message=str(e)
         )
 
     except Exception as e:
@@ -551,6 +598,9 @@ if user_prompt:
 # -----------------------------------
 # Optional log preview
 # -----------------------------------
+# -----------------------------------
+# Optional log preview
+# -----------------------------------
 st.markdown("---")
 st.subheader("Recent Chat Audit Log")
 
@@ -564,23 +614,12 @@ if LOG_FILE.exists():
                     rows.append(json.loads(line))
 
         if rows:
-            df_logs = pd.DataFrame(rows).fillna("")
-
-            # Avoid Streamlit / Arrow dtype issues
-            for col in df_logs.columns:
-                df_logs[col] = df_logs[col].astype(str)
-
-            st.dataframe(df_logs, use_container_width=True)
+            for i, row in enumerate(reversed(rows), 1):
+                with st.expander(f"Log Entry {i} | {row.get('timestamp', 'N/A')}"):
+                    st.json(row)
         else:
             st.info("No logs yet. Start chatting to generate monitoring records.")
     except Exception as e:
         st.warning(f"Could not read log file: {e}")
-        # extra-safe raw display
-        try:
-            with LOG_FILE.open("r", encoding="utf-8") as f:
-                raw_lines = f.readlines()[-10:]
-            st.text("".join(raw_lines))
-        except Exception:
-            pass
 else:
     st.info("No logs yet. Start chatting to generate monitoring records.")
