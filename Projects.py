@@ -25,10 +25,10 @@ Welcome to my portfolio of **data engineering, analytics, automation, and AI-dri
 This workspace showcases projects built around:
 
 - **ETL / ELT pipeline design**
-- **data quality and validation**
-- **SQL optimization**
-- **cloud cost monitoring**
-- **web scraping and API ingestion**
+- **Data Quality and Validation**
+- **SQL Optimization**
+- **Cloud Cost Monitoring**
+- **Web scraping and API ingestion**
 - **GIS and geospatial analytics**
 - **NLP and ML-powered data applications**
 
@@ -124,6 +124,8 @@ Use the **left sidebar** to open each live project page.
         """
 - [Microsoft Azure Data Fundamentals](https://www.credly.com/badges/aab2fdf4-c454-49fe-9f40-7d1793afbed0/public_url)
 - [Microsoft Azure Fundamentals](https://www.credly.com/badges/7a66102f-5a98-437c-99d2-31744bef91a7/public_url)
+- [Microsoft Azure AI Fundamentals](- [Microsoft Azure AI Fundamentals](https://www.credly.com/badges/7a66102f-5a98-437c-99d2-31744bef91a7/public_url)
+)
 """
     )
 
@@ -135,11 +137,11 @@ Use the **left sidebar** to open each live project page.
 This portfolio is designed to demonstrate practical, business-oriented engineering work rather than only notebook-style experiments.
 
 The projects focus on:
-- building reliable data systems
-- improving performance and cost efficiency
-- validating and transforming data
-- supporting analytics and decision-making
-- showcasing production-style dashboards and monitoring workflows
+- Building reliable data systems
+- Improving performance and cost efficiency
+- Validating and transforming data
+- Supporting analytics and decision-making
+- Showcasing production-style dashboards and monitoring workflows
 """
     )
 
