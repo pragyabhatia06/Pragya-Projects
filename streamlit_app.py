@@ -124,7 +124,7 @@ Use the **left sidebar** to open each live project page.
         """
 - [Microsoft Azure Data Fundamentals](https://www.credly.com/badges/aab2fdf4-c454-49fe-9f40-7d1793afbed0/public_url)
 - [Microsoft Azure Fundamentals](https://www.credly.com/badges/7a66102f-5a98-437c-99d2-31744bef91a7/public_url)
-- [Microsoft Azure AI Fundamentals](- [Microsoft Azure AI Fundamentals](https://www.credly.com/badges/7a66102f-5a98-437c-99d2-31744bef91a7/public_url)
+- [Microsoft Azure AI Fundamentals](https://www.credly.com/badges/7a66102f-5a98-437c-99d2-31744bef91a7/public_url)
 )
 """
     )
