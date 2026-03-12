@@ -1,77 +1,265 @@
-import streamlit as st
-import replicate
 import os
+import time
+import json
+from datetime import datetime
+from pathlib import Path
 
-# App title
-st.set_page_config(page_title="🦙💬 Llama 2 Chatbot")
+import requests
+import streamlit as st
 
-# Replicate Credentials
-with st.sidebar:
-    st.title('🦙💬 Llama 2 Chatbot')
-    if 'REPLICATE_API_TOKEN' in st.secrets:
-        st.success('API key already provided!', icon='✅')
-        replicate_api = st.secrets['REPLICATE_API_TOKEN']
+# -----------------------------------
+# Page config
+# -----------------------------------
+st.set_page_config(
+    page_title="LLM Q&A Monitoring App",
+    page_icon="🤖",
+    layout="wide"
+)
+
+# -----------------------------------
+# Config
+# -----------------------------------
+LOG_FILE = Path("chat_audit_log.jsonl")
+
+DEFAULT_SYSTEM_PROMPT = """
+You are a helpful AI assistant.
+Answer clearly and concisely.
+If the question is unclear, say what is missing.
+""".strip()
+
+MODEL_OPTIONS = {
+    "Phi-3 Mini": "microsoft/Phi-3-mini-4k-instruct",
+    "TinyLlama Chat": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+}
+
+# -----------------------------------
+# Helper functions
+# -----------------------------------
+def supports_chat_ui() -> bool:
+    return hasattr(st, "chat_message") and hasattr(st, "chat_input")
+
+def init_session():
+    if "messages" not in st.session_state:
+        st.session_state.messages = [
+            {"role": "assistant", "content": "Hello! Ask me anything about data engineering, pipelines, SQL, cloud, or ML systems."}
+        ]
+    if "chat_metrics" not in st.session_state:
+        st.session_state.chat_metrics = {
+            "total_requests": 0,
+            "total_errors": 0,
+            "last_latency_sec": None,
+        }
+
+def clear_chat():
+    st.session_state.messages = [
+        {"role": "assistant", "content": "Hello! Ask me anything about data engineering, pipelines, SQL, cloud, or ML systems."}
+    ]
+
+def build_prompt(messages, system_prompt):
+    prompt_parts = [f"System: {system_prompt}\n"]
+    for msg in messages:
+        role = msg["role"].capitalize()
+        prompt_parts.append(f"{role}: {msg['content']}\n")
+    prompt_parts.append("Assistant:")
+    return "\n".join(prompt_parts)
+
+def log_interaction(user_prompt, assistant_response, model_name, latency, status, error_message=None):
+    record = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "model": model_name,
+        "user_prompt": user_prompt,
+        "assistant_response": assistant_response,
+        "latency_sec": round(latency, 3) if latency is not None else None,
+        "status": status,
+        "error_message": error_message,
+        "prompt_length": len(user_prompt) if user_prompt else 0,
+        "response_length": len(assistant_response) if assistant_response else 0,
+    }
+    with LOG_FILE.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+def query_huggingface(model_id: str, prompt: str, hf_token: str, max_new_tokens: int, temperature: float, top_p: float):
+    """
+    Uses Hugging Face Inference API.
+    """
+    api_url = f"https://api-inference.huggingface.co/models/{model_id}"
+    headers = {"Authorization": f"Bearer {hf_token}"}
+
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "max_new_tokens": max_new_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "return_full_text": False
+        },
+        "options": {
+            "wait_for_model": True
+        }
+    }
+
+    response = requests.post(api_url, headers=headers, json=payload, timeout=120)
+    response.raise_for_status()
+    data = response.json()
+
+    if isinstance(data, list) and len(data) > 0 and "generated_text" in data[0]:
+        return data[0]["generated_text"].strip()
+
+    if isinstance(data, dict) and "generated_text" in data:
+        return data["generated_text"].strip()
+
+    return str(data)
+
+def show_messages():
+    if supports_chat_ui():
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
     else:
-        replicate_api = st.text_input('Enter Replicate API token:', type='password')
-        if not (replicate_api.startswith('r8_') and len(replicate_api)==40):
-            st.warning('Please enter your credentials!', icon='⚠️')
+        st.warning("Your Streamlit version does not support chat components. Showing fallback layout.")
+        for msg in st.session_state.messages:
+            st.markdown(f"**{msg['role'].capitalize()}:** {msg['content']}")
+
+# -----------------------------------
+# Init
+# -----------------------------------
+init_session()
+
+# -----------------------------------
+# Sidebar
+# -----------------------------------
+with st.sidebar:
+    st.title("🤖 LLM Q&A App")
+    st.caption("Open-model chatbot with logging and monitoring")
+
+    hf_token = st.secrets.get("HF_API_TOKEN", "")
+    if hf_token:
+        st.success("Hugging Face API token found in secrets.")
+    else:
+        hf_token = st.text_input("Enter Hugging Face API token", type="password")
+
+    selected_model_label = st.selectbox("Choose model", list(MODEL_OPTIONS.keys()))
+    selected_model_id = MODEL_OPTIONS[selected_model_label]
+
+    temperature = st.slider("Temperature", 0.0, 1.5, 0.2, 0.1)
+    top_p = st.slider("Top P", 0.1, 1.0, 0.9, 0.05)
+    max_new_tokens = st.slider("Max new tokens", 64, 512, 256, 32)
+
+    system_prompt = st.text_area("System prompt", value=DEFAULT_SYSTEM_PROMPT, height=120)
+
+    st.button("Clear Chat History", on_click=clear_chat)
+
+    st.markdown("---")
+    st.subheader("Run Metrics")
+    st.metric("Total Requests", st.session_state.chat_metrics["total_requests"])
+    st.metric("Total Errors", st.session_state.chat_metrics["total_errors"])
+    last_latency = st.session_state.chat_metrics["last_latency_sec"]
+    st.metric("Last Latency (sec)", f"{last_latency:.2f}" if last_latency is not None else "N/A")
+
+# -----------------------------------
+# Main UI
+# -----------------------------------
+st.title("LLM Q&A + Monitoring Dashboard")
+st.write("A portfolio-ready chatbot project demonstrating model integration, logging, monitoring, and robust Streamlit UI handling.")
+
+show_messages()
+
+# -----------------------------------
+# Input
+# -----------------------------------
+if supports_chat_ui():
+    user_prompt = st.chat_input("Ask a question...")
+else:
+    user_prompt = st.text_input("Ask a question...")
+
+if user_prompt:
+    st.session_state.messages.append({"role": "user", "content": user_prompt})
+
+    if supports_chat_ui():
+        with st.chat_message("user"):
+            st.write(user_prompt)
+    else:
+        st.markdown(f"**User:** {user_prompt}")
+
+    assistant_response = ""
+    start_time = time.time()
+
+    try:
+        if not hf_token:
+            raise ValueError("Missing Hugging Face API token.")
+
+        full_prompt = build_prompt(st.session_state.messages, system_prompt)
+
+        if supports_chat_ui():
+            with st.chat_message("assistant"):
+                with st.spinner("Generating response..."):
+                    assistant_response = query_huggingface(
+                        model_id=selected_model_id,
+                        prompt=full_prompt,
+                        hf_token=hf_token,
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature,
+                        top_p=top_p
+                    )
+                    st.write(assistant_response)
         else:
-            st.success('Proceed to entering your prompt message!', icon='👉')
-    os.environ['REPLICATE_API_TOKEN'] = replicate_api
+            with st.spinner("Generating response..."):
+                assistant_response = query_huggingface(
+                    model_id=selected_model_id,
+                    prompt=full_prompt,
+                    hf_token=hf_token,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p
+                )
+            st.markdown(f"**Assistant:** {assistant_response}")
 
-    st.subheader('Models and parameters')
-    selected_model = st.sidebar.selectbox('Choose a Llama2 model', ['Llama2-7B', 'Llama2-13B'], key='selected_model')
-    if selected_model == 'Llama2-7B':
-        llm = 'a16z-infra/llama7b-v2-chat:4f0a4744c7295c024a1de15e1a63c880d3da035fa1f49bfd344fe076074c8eea'
-    elif selected_model == 'Llama2-13B':
-        llm = 'a16z-infra/llama13b-v2-chat:df7690f1994d94e96ad9d568eac121aecf50684a0b0963b25a41cc40061269e5'
-    temperature = st.sidebar.slider('temperature', min_value=0.01, max_value=5.0, value=0.1, step=0.01)
-    top_p = st.sidebar.slider('top_p', min_value=0.01, max_value=1.0, value=0.9, step=0.01)
-    max_length = st.sidebar.slider('max_length', min_value=32, max_value=128, value=120, step=8)
-    st.markdown('📖 Learn how to build this app in this [blog](https://blog.streamlit.io/how-to-build-a-llama-2-chatbot/)!')
+        latency = time.time() - start_time
+        st.session_state.chat_metrics["total_requests"] += 1
+        st.session_state.chat_metrics["last_latency_sec"] = latency
 
-# Store LLM generated responses
-if "messages" not in st.session_state.keys():
-    st.session_state.messages = [{"role": "assistant", "content": "How may I assist you today?"}]
+        st.session_state.messages.append({"role": "assistant", "content": assistant_response})
 
-# Display or clear chat messages
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.write(message["content"])
+        log_interaction(
+            user_prompt=user_prompt,
+            assistant_response=assistant_response,
+            model_name=selected_model_id,
+            latency=latency,
+            status="success"
+        )
 
-def clear_chat_history():
-    st.session_state.messages = [{"role": "assistant", "content": "How may I assist you today?"}]
-st.sidebar.button('Clear Chat History', on_click=clear_chat_history)
+    except Exception as e:
+        latency = time.time() - start_time
+        st.session_state.chat_metrics["total_errors"] += 1
+        st.session_state.chat_metrics["last_latency_sec"] = latency
 
-# Function for generating LLaMA2 response. Refactored from https://github.com/a16z-infra/llama2-chatbot
-def generate_llama2_response(prompt_input):
-    string_dialogue = "You are a helpful assistant. You do not respond as 'User' or pretend to be 'User'. You only respond once as 'Assistant'."
-    for dict_message in st.session_state.messages:
-        if dict_message["role"] == "user":
-            string_dialogue += "User: " + dict_message["content"] + "\n\n"
-        else:
-            string_dialogue += "Assistant: " + dict_message["content"] + "\n\n"
-    output = replicate.run('a16z-infra/llama13b-v2-chat:df7690f1994d94e96ad9d568eac121aecf50684a0b0963b25a41cc40061269e5', 
-                           input={"prompt": f"{string_dialogue} {prompt_input} Assistant: ",
-                                  "temperature":temperature, "top_p":top_p, "max_length":max_length, "repetition_penalty":1})
-    return output
+        error_text = f"Error: {str(e)}"
+        st.error(error_text)
 
-# User-provided prompt
-if prompt := st.chat_input(disabled=not replicate_api):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.write(prompt)
+        log_interaction(
+            user_prompt=user_prompt,
+            assistant_response="",
+            model_name=selected_model_id,
+            latency=latency,
+            status="failed",
+            error_message=str(e)
+        )
 
-# Generate a new response if last message is not from assistant
-if st.session_state.messages[-1]["role"] != "assistant":
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            response = generate_llama2_response(prompt)
-            placeholder = st.empty()
-            full_response = ''
-            for item in response:
-                full_response += item
-                placeholder.markdown(full_response)
-            placeholder.markdown(full_response)
-    message = {"role": "assistant", "content": full_response}
-    st.session_state.messages.append(message)
+# -----------------------------------
+# Optional log preview
+# -----------------------------------
+st.markdown("---")
+st.subheader("Recent Chat Audit Log")
+
+if LOG_FILE.exists():
+    try:
+        rows = []
+        with LOG_FILE.open("r", encoding="utf-8") as f:
+            for line in f.readlines()[-10:]:
+                rows.append(json.loads(line))
+        if rows:
+            st.dataframe(rows, use_container_width=True)
+    except Exception as e:
+        st.warning(f"Could not read log file: {e}")
+else:
+    st.info("No logs yet. Start chatting to generate monitoring records.")
