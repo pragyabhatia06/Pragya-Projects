@@ -494,6 +494,7 @@ if uploaded_file:
 
     if selected_suggested_question:
         suggested_answer = answer_question_from_pages(selected_suggested_question, cleaned_pages)
+        suggested_answer_html = escape(suggested_answer).replace("\n", "<br>")
         st.markdown(
             f"""
             <div class=\"qa-card\">
@@ -507,7 +508,7 @@ if uploaded_file:
             f"""
             <div class=\"qa-card\">
                 <div class=\"qa-role\">Answer (From PDF Evidence)</div>
-                <div class=\"qa-content\">{escape(suggested_answer).replace('\n', '<br>')}</div>
+                <div class=\"qa-content\">{suggested_answer_html}</div>
             </div>
             """,
             unsafe_allow_html=True
