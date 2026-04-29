@@ -1,3 +1,6 @@
+import os
+import shutil
+from datetime import datetime
 from typing import List, Dict
 
 try:
@@ -21,6 +24,7 @@ class VectorStore:
                 "Missing dependency 'chromadb'. Install it with: pip install chromadb"
             )
 
+        self.persist_directory = persist_directory
         self.backend_mode = "persistent"
         self.init_error = None
 
@@ -34,10 +38,38 @@ class VectorStore:
             self.client = chromadb.EphemeralClient()
 
         self.collection_name = collection_name
+        self.collection = self._create_collection_with_recovery()
 
-        self.collection = self.client.get_or_create_collection(
-            name=collection_name
-        )
+    def _create_collection_with_recovery(self):
+        try:
+            return self.client.get_or_create_collection(name=self.collection_name)
+        except Exception as exc:
+            error_text = str(exc)
+
+            # Recover from persisted DB incompatibility/corruption (seen as KeyError: '_type').
+            if self.backend_mode == "persistent" and "_type" in error_text:
+                backup_path = f"{self.persist_directory}_backup_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                try:
+                    if os.path.exists(self.persist_directory):
+                        shutil.move(self.persist_directory, backup_path)
+                    os.makedirs(self.persist_directory, exist_ok=True)
+                    self.client = chromadb.PersistentClient(path=self.persist_directory)
+                    self.init_error = f"Recovered from corrupt/incompatible Chroma data. Backup: {backup_path}"
+                    return self.client.get_or_create_collection(name=self.collection_name)
+                except Exception as recovery_exc:
+                    self.backend_mode = "ephemeral"
+                    self.init_error = f"Persistent recovery failed ({recovery_exc}); using ephemeral backend."
+                    self.client = chromadb.EphemeralClient()
+                    return self.client.get_or_create_collection(name=self.collection_name)
+
+            # For all other initialization failures, keep app usable via ephemeral backend.
+            if self.backend_mode == "persistent":
+                self.backend_mode = "ephemeral"
+                self.init_error = f"Persistent backend failed ({error_text}); using ephemeral backend."
+                self.client = chromadb.EphemeralClient()
+                return self.client.get_or_create_collection(name=self.collection_name)
+
+            raise
 
     def add_chunks(self, chunks: List[Dict], embeddings: List[List[float]]) -> int:
         """
