@@ -174,6 +174,9 @@ if "latest_top_terms" not in st.session_state:
 if "manual_query_input" not in st.session_state:
     st.session_state.manual_query_input = ""
 
+if "pending_manual_query_input" not in st.session_state:
+    st.session_state.pending_manual_query_input = ""
+
 st.markdown(
     """
     <style>
@@ -408,7 +411,7 @@ if uploaded_file:
         st.caption("Document coverage by page")
         st.area_chart(
             coverage_chart_df.set_index("page_number")[["coverage_flag"]],
-            use_container_width=True
+            width="stretch"
         )
 
     top_terms = _top_terms_from_pages(cleaned_pages)
@@ -426,7 +429,7 @@ if uploaded_file:
         if not topic_df.empty:
             topic_df["share_pct"] = (topic_df["count"] / max(1, topic_df["count"].sum()) * 100).round(2)
             st.caption("Topic concentration (top terms share)")
-            st.bar_chart(topic_df.set_index("topic")[["share_pct"]], use_container_width=True)
+            st.bar_chart(topic_df.set_index("topic")[["share_pct"]], width="stretch")
 
     if top_terms:
         trend_terms = top_terms[:3]
@@ -442,7 +445,7 @@ if uploaded_file:
             st.caption("Keyword trend lines across pages")
             st.line_chart(
                 trend_df.set_index("page_number"),
-                use_container_width=True
+                width="stretch"
             )
 
     st.subheader("5. Document Analytics")
@@ -453,14 +456,14 @@ if uploaded_file:
         st.caption("Text volume by page")
         st.bar_chart(
             page_metrics_df.set_index("page_number")[["characters", "estimated_words"]],
-            use_container_width=True
+            width="stretch"
         )
 
     with analytics_col2:
         st.caption("Sentence density by page")
         st.line_chart(
             page_metrics_df.set_index("page_number")[["estimated_sentences"]],
-            use_container_width=True
+            width="stretch"
         )
 
     if top_terms:
@@ -475,7 +478,7 @@ if uploaded_file:
         )
         if not keyword_df.empty:
             st.caption("Top repeated document terms")
-            st.bar_chart(keyword_df.set_index("term"), use_container_width=True)
+            st.bar_chart(keyword_df.set_index("term"), width="stretch")
 
     suggested_questions = build_suggested_questions(cleaned_pages)
 
@@ -534,7 +537,7 @@ if uploaded_file:
     if not chunk_df.empty:
         st.dataframe(
             chunk_df[["chunk_id", "file_name", "page_number", "chunk_index", "text"]],
-            use_container_width=True
+            width="stretch"
         )
 
     st.subheader("8. Data Quality Checks")
@@ -630,6 +633,10 @@ st.divider()
 
 st.subheader("10. Semantic Search / RAG Query")
 
+if st.session_state.pending_manual_query_input:
+    st.session_state.manual_query_input = st.session_state.pending_manual_query_input
+    st.session_state.pending_manual_query_input = ""
+
 query = st.text_input(
     "Ask a question from uploaded documents",
     placeholder="Example: What is this document about?",
@@ -680,7 +687,7 @@ if query:
 
         st.dataframe(
             pd.DataFrame(result_rows),
-            use_container_width=True
+            width="stretch"
         )
 
     st.subheader("RAG-Style Answer")
@@ -700,7 +707,7 @@ if query:
         for index, follow_up_question in enumerate(follow_up_questions):
             with follow_up_cols[index % 2]:
                 if st.button(follow_up_question, key=f"follow_up_question_{index}"):
-                    st.session_state.manual_query_input = follow_up_question
+                    st.session_state.pending_manual_query_input = follow_up_question
                     st.rerun()
 
     with st.expander("Context Passed to LLM"):
