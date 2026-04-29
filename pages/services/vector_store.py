@@ -21,7 +21,18 @@ class VectorStore:
                 "Missing dependency 'chromadb'. Install it with: pip install chromadb"
             )
 
-        self.client = chromadb.PersistentClient(path=persist_directory)
+        self.backend_mode = "persistent"
+        self.init_error = None
+
+        try:
+            self.client = chromadb.PersistentClient(path=persist_directory)
+        except Exception as exc:
+            # Some managed runtimes fail to initialize persistent Chroma clients
+            # due to tenant/rust binding initialization issues. Fall back safely.
+            self.backend_mode = "ephemeral"
+            self.init_error = str(exc)
+            self.client = chromadb.EphemeralClient()
+
         self.collection_name = collection_name
 
         self.collection = self.client.get_or_create_collection(
