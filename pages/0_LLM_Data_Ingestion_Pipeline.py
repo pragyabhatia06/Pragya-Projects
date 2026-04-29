@@ -1,5 +1,8 @@
 import os
+import re
 import time
+from html import escape
+from collections import Counter
 from datetime import datetime
 
 import pandas as pd
@@ -11,6 +14,128 @@ from pages.services.text_chunker import chunk_text
 from pages.services.embedding_service import EmbeddingService
 from pages.services.vector_store import VectorStore
 from pages.services.rag_service import build_context_from_results, generate_basic_rag_answer
+
+
+STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "in",
+    "is", "it", "of", "on", "or", "that", "the", "to", "was", "were", "will", "with",
+    "this", "these", "those", "into", "their", "there", "about", "what", "which", "when",
+    "where", "who", "why", "how", "your", "you", "they", "them", "than", "then", "also"
+}
+
+
+def _tokenize_words(text: str) -> list[str]:
+    return re.findall(r"[A-Za-z][A-Za-z0-9\-]{2,}", text.lower())
+
+
+def _split_sentences(text: str) -> list[str]:
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", text)
+    return [sentence.strip() for sentence in sentences if len(sentence.strip()) > 40]
+
+
+def _count_term_in_text(text: str, term: str) -> int:
+    return len(re.findall(rf"\b{re.escape(term.lower())}\b", text.lower()))
+
+
+def _top_terms_from_pages(pages: list[dict], limit: int = 6) -> list[str]:
+    tokens = []
+    for page in pages:
+        tokens.extend(
+            token for token in _tokenize_words(page.get("text", ""))
+            if token not in STOP_WORDS and not token.isdigit()
+        )
+
+    ranked_terms = [term for term, _ in Counter(tokens).most_common(limit * 3)]
+    unique_terms = []
+
+    for term in ranked_terms:
+        if term not in unique_terms:
+            unique_terms.append(term)
+        if len(unique_terms) >= limit:
+            break
+
+    return unique_terms
+
+
+def build_suggested_questions(pages: list[dict]) -> list[str]:
+    top_terms = _top_terms_from_pages(pages)
+    suggested_questions = [
+        "What is this document about?",
+        "What are the main topics covered in the document?",
+        "What key metrics or figures are mentioned?",
+        "What actions, recommendations, or next steps are described?"
+    ]
+
+    for term in top_terms[:3]:
+        suggested_questions.append(f"What does the document say about {term}?")
+
+    deduped_questions = []
+    for question in suggested_questions:
+        if question not in deduped_questions:
+            deduped_questions.append(question)
+
+    return deduped_questions[:6]
+
+
+def answer_question_from_pages(question: str, pages: list[dict], max_sentences: int = 3) -> str:
+    question_terms = {
+        token for token in _tokenize_words(question)
+        if token not in STOP_WORDS
+    }
+    scored_sentences = []
+
+    for page in pages:
+        for sentence in _split_sentences(page.get("text", "")):
+            sentence_terms = set(_tokenize_words(sentence))
+            overlap = len(question_terms & sentence_terms)
+            numeric_bonus = 1 if re.search(r"\d", sentence) else 0
+            score = overlap * 3 + numeric_bonus
+
+            if score > 0 or not question_terms:
+                scored_sentences.append((score, page["page_number"], sentence))
+
+    if not scored_sentences:
+        fallback = []
+        for page in pages[:2]:
+            page_sentences = _split_sentences(page.get("text", ""))
+            if page_sentences:
+                fallback.append(f"Page {page['page_number']}: {page_sentences[0]}")
+        return "\n\n".join(fallback) if fallback else "No answer could be derived from the extracted PDF text."
+
+    top_matches = sorted(scored_sentences, key=lambda item: (-item[0], item[1]))[:max_sentences]
+    return "\n\n".join(
+        [f"Page {page_number}: {sentence}" for _, page_number, sentence in top_matches]
+    )
+
+
+def build_follow_up_questions(
+    question: str,
+    result_rows: list[dict],
+    preferred_terms: list[str] | None = None
+) -> list[str]:
+    preferred_terms = preferred_terms or []
+    follow_ups = [
+        "Can you summarize this in 5 concise bullet points?",
+        "What assumptions, risks, or constraints are mentioned?",
+        "What actions or next steps are recommended?"
+    ]
+
+    if result_rows:
+        first_row = result_rows[0]
+        source_file = first_row.get("file_name") or "the document"
+        source_page = first_row.get("page_number")
+        if source_page is not None:
+            follow_ups.append(f"What are the key insights from page {source_page} in {source_file}?")
+
+    for term in preferred_terms[:3]:
+        follow_ups.append(f"Can you explain the section related to {term} in simple terms?")
+
+    deduped = []
+    for candidate in follow_ups:
+        if candidate not in deduped and candidate.strip().lower() != question.strip().lower():
+            deduped.append(candidate)
+
+    return deduped[:6]
 
 
 st.set_page_config(
@@ -36,6 +161,44 @@ if "last_embed_latency_s" not in st.session_state:
 
 if "last_inserted_count" not in st.session_state:
     st.session_state.last_inserted_count = 0
+
+if "suggested_pdf_question" not in st.session_state:
+    st.session_state.suggested_pdf_question = ""
+
+if "latest_cleaned_pages" not in st.session_state:
+    st.session_state.latest_cleaned_pages = []
+
+if "latest_top_terms" not in st.session_state:
+    st.session_state.latest_top_terms = []
+
+if "manual_query_input" not in st.session_state:
+    st.session_state.manual_query_input = ""
+
+st.markdown(
+    """
+    <style>
+    .qa-card {
+        border: 1px solid rgba(49, 51, 63, 0.20);
+        border-radius: 14px;
+        padding: 12px 14px;
+        margin-top: 8px;
+        background: linear-gradient(180deg, rgba(49, 51, 63, 0.06), rgba(49, 51, 63, 0.02));
+    }
+    .qa-role {
+        font-size: 0.78rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        opacity: 0.75;
+        margin-bottom: 6px;
+    }
+    .qa-content {
+        font-size: 0.95rem;
+        line-height: 1.55;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 
 with st.sidebar:
@@ -216,7 +379,141 @@ if uploaded_file:
             st.markdown(f"**Page {page['page_number']}**")
             st.write(page["text"][:1500])
 
-    st.subheader("4. Chunk Document")
+    st.subheader("4. Executive Summary")
+
+    page_metrics_df = pd.DataFrame([
+        {
+            "page_number": page["page_number"],
+            "characters": len(page["text"]),
+            "estimated_words": len(page["text"].split()),
+            "estimated_sentences": max(1, len(_split_sentences(page["text"])))
+        }
+        for page in cleaned_pages
+    ])
+
+    pages_with_text = int((page_metrics_df["characters"] > 0).sum())
+    coverage_pct = (pages_with_text / len(page_metrics_df) * 100) if len(page_metrics_df) else 0
+    avg_words_per_page = int(page_metrics_df["estimated_words"].mean()) if len(page_metrics_df) else 0
+
+    summary_col1, summary_col2, summary_col3 = st.columns(3)
+    summary_col1.metric("Document Coverage", f"{coverage_pct:.1f}%")
+    summary_col2.metric("Pages With Text", pages_with_text)
+    summary_col3.metric("Avg Words/Page", f"{avg_words_per_page:,}")
+
+    exec_col1, exec_col2 = st.columns(2)
+
+    with exec_col1:
+        coverage_chart_df = page_metrics_df[["page_number", "characters"]].copy()
+        coverage_chart_df["coverage_flag"] = coverage_chart_df["characters"].apply(lambda value: 1 if value > 0 else 0)
+        st.caption("Document coverage by page")
+        st.area_chart(
+            coverage_chart_df.set_index("page_number")[["coverage_flag"]],
+            use_container_width=True
+        )
+
+    top_terms = _top_terms_from_pages(cleaned_pages)
+    st.session_state.latest_cleaned_pages = cleaned_pages
+    st.session_state.latest_top_terms = top_terms
+
+    with exec_col2:
+        topic_counter = Counter(
+            token
+            for page in cleaned_pages
+            for token in _tokenize_words(page["text"])
+            if token not in STOP_WORDS
+        )
+        topic_df = pd.DataFrame(topic_counter.most_common(8), columns=["topic", "count"])
+        if not topic_df.empty:
+            topic_df["share_pct"] = (topic_df["count"] / max(1, topic_df["count"].sum()) * 100).round(2)
+            st.caption("Topic concentration (top terms share)")
+            st.bar_chart(topic_df.set_index("topic")[["share_pct"]], use_container_width=True)
+
+    if top_terms:
+        trend_terms = top_terms[:3]
+        trend_records = []
+        for page in cleaned_pages:
+            row = {"page_number": page["page_number"]}
+            for term in trend_terms:
+                row[term] = _count_term_in_text(page["text"], term)
+            trend_records.append(row)
+
+        trend_df = pd.DataFrame(trend_records)
+        if not trend_df.empty:
+            st.caption("Keyword trend lines across pages")
+            st.line_chart(
+                trend_df.set_index("page_number"),
+                use_container_width=True
+            )
+
+    st.subheader("5. Document Analytics")
+
+    analytics_col1, analytics_col2 = st.columns(2)
+
+    with analytics_col1:
+        st.caption("Text volume by page")
+        st.bar_chart(
+            page_metrics_df.set_index("page_number")[["characters", "estimated_words"]],
+            use_container_width=True
+        )
+
+    with analytics_col2:
+        st.caption("Sentence density by page")
+        st.line_chart(
+            page_metrics_df.set_index("page_number")[["estimated_sentences"]],
+            use_container_width=True
+        )
+
+    if top_terms:
+        keyword_df = pd.DataFrame(
+            Counter(
+                token
+                for page in cleaned_pages
+                for token in _tokenize_words(page["text"])
+                if token in top_terms
+            ).most_common(),
+            columns=["term", "count"]
+        )
+        if not keyword_df.empty:
+            st.caption("Top repeated document terms")
+            st.bar_chart(keyword_df.set_index("term"), use_container_width=True)
+
+    suggested_questions = build_suggested_questions(cleaned_pages)
+
+    st.subheader("6. Suggested Questions from PDF")
+    st.caption("Auto-generated prompts and quick evidence-based answers derived from extracted text.")
+
+    question_cols = st.columns(2)
+    for index, suggested_question in enumerate(suggested_questions):
+        with question_cols[index % 2]:
+            if st.button(suggested_question, key=f"suggested_question_{index}"):
+                st.session_state.suggested_pdf_question = suggested_question
+
+    selected_suggested_question = st.session_state.suggested_pdf_question or (
+        suggested_questions[0] if suggested_questions else ""
+    )
+
+    if selected_suggested_question:
+        suggested_answer = answer_question_from_pages(selected_suggested_question, cleaned_pages)
+        st.markdown(
+            f"""
+            <div class=\"qa-card\">
+                <div class=\"qa-role\">Suggested Question</div>
+                <div class=\"qa-content\">{escape(selected_suggested_question)}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        st.markdown(
+            f"""
+            <div class=\"qa-card\">
+                <div class=\"qa-role\">Answer (From PDF Evidence)</div>
+                <div class=\"qa-content\">{escape(suggested_answer).replace('\n', '<br>')}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    st.subheader("7. Chunk Document")
 
     chunks = chunk_text(
         pages=cleaned_pages,
@@ -239,7 +536,7 @@ if uploaded_file:
             use_container_width=True
         )
 
-    st.subheader("5. Data Quality Checks")
+    st.subheader("8. Data Quality Checks")
 
     empty_chunks = [c for c in chunks if not c["text"].strip()]
     duplicate_chunks = chunk_df["text"].duplicated().sum() if not chunk_df.empty else 0
@@ -289,7 +586,7 @@ if uploaded_file:
         st.caption("Chunk profile by page")
         st.bar_chart(chunk_profile)
 
-    st.subheader("6. Generate Embeddings & Store in Vector DB")
+    st.subheader("9. Generate Embeddings & Store in Vector DB")
 
     if st.button("Run Embedding Pipeline"):
         if not chunks:
@@ -330,11 +627,12 @@ if uploaded_file:
 
 st.divider()
 
-st.subheader("7. Semantic Search / RAG Query")
+st.subheader("10. Semantic Search / RAG Query")
 
 query = st.text_input(
     "Ask a question from uploaded documents",
-    placeholder="Example: What is this document about?"
+    placeholder="Example: What is this document about?",
+    key="manual_query_input"
 )
 
 if query:
@@ -387,6 +685,22 @@ if query:
     st.subheader("RAG-Style Answer")
 
     st.write(answer)
+
+    follow_up_questions = build_follow_up_questions(
+        question=query,
+        result_rows=result_rows,
+        preferred_terms=st.session_state.latest_top_terms
+    )
+
+    if follow_up_questions:
+        st.subheader("Suggested Follow-up Questions")
+        st.caption("Click any follow-up to auto-fill and rerun semantic search.")
+        follow_up_cols = st.columns(2)
+        for index, follow_up_question in enumerate(follow_up_questions):
+            with follow_up_cols[index % 2]:
+                if st.button(follow_up_question, key=f"follow_up_question_{index}"):
+                    st.session_state.manual_query_input = follow_up_question
+                    st.rerun()
 
     with st.expander("Context Passed to LLM"):
         st.write(context)
